@@ -1,0 +1,251 @@
+---
+title: "MA615 Final Assignment - STRAWBERRY Project"
+author: "Fan Feng"
+date: "2020/10/19"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning =FALSE, message=FALSE)
+library(knitr)
+library(tidyverse)
+library(magrittr)
+```
+
+# MA615 Unit 1 Final Assignment -- Strawberry Project
+
+##                                  ABSTRACT
+
+This the Final Assignment of MA615 2020. this assignment combines data cleaning, data organization, and EDA -- which is how it generally happens.  You may use either of the red berries for the assignment. Finish cleaning and organizing the data. Visualize and explore the data. Prepare a report, a presentation, and a shiny application describing what you did and what you learned. Using markdown (perhaps with some additional LaTeX and HTML), format the document with headings, tables, lists, and so on. Be prepared to use your presentation slides in class. Publish your shiny app on shinyapps.io. To provide a focus for the deliverables, imagine that you are cleaning, organizing, and exploring the dataset before releasing it to an agricultural research team for analysis and modeling.
+
+## Part 1: Data Cleaning & Organization  
+
+### 1.1 Acquire and process the raw data
+
+These data were collected from the USDA database selector: 
+<a href="https://quickstats.nass.usda.gov">https://quickstats.nass.usda.gov</a> 
+
+The data were <ahref="https://quickstats.nass.usda.gov/results/D416E96E-3D5C-324C-9334-1D38DF88FFF1">stored online</a> and then downloaded as a CSV file.
+
+First, we load the raw dataset into 'berry_data'. However, data selected from the NASS database often has columns without any data or with a single repeated Values. Therefore, we check the unique values in each column to remove the useless columns having only one unique value. Also, there are some columns containing the redundant information, such as 'State' column and 'State ANSI' column. So we only keep the 'State' column which shows the state
+name.
+
+```{r}
+## read the raw data
+berry_data <- read_csv("berries.csv", col_names = TRUE)
+## look at number of unique values in each column
+col_unique <- berry_data %>% summarize_all(n_distinct) 
+## make a list of the columns with only one unique value
+no_use <- which(col_unique[1,]==1)
+## list the 1-unique valu column names 
+cn <- colnames(berry_data)[no_use]
+## remove the 1-unique columns from the dataset
+berry_data %<>% select(-all_of(no_use))
+col_unique %<>% select(-all_of(no_use)) 
+## State name and the State ANSI code are (sort of) redundant
+berry_data %<>% select(-`State ANSI`)
+col_unique %<>% select(-`State ANSI`) 
+```
+
+According to our analysis, the berries data had only 8 out of 21 columns containing meaningful data. Based on the preliminary analysis, most of the contents of the data set are useful.
+```{r}
+head(berry_data)
+```
+
+### 1.2 Focus on Strawberry data and cleaning in depth
+
+This table contains informaton about three different berries: blueberries, raspberries, and strawberries. Since the raw data have been cleaned and organized, the three kinds of berries will be separted into tables with the same stucture so that they can be compared.  In this project, we will only work with strawberry data and Only the "YEAR" time periond will be considered.
+
+```{r}
+berry_type<- unique(berry_data$Commodity)
+nberry <- length(berry_type)
+
+strawberry <- berry_data %>%
+  filter((Commodity=="STRAWBERRIES") & (Period=="YEAR")) %<>%
+  select(-c(Period, Commodity))   
+```
+
+#### Cleaning the 'Data Item' column
+
+Looking at the data brifely, we can notice that the column 'Data Item' contains composite information. Thus, we try to seperate the content of each entry by comma. In the end, the 'Data Item' will be turned into several columns such as 'type', 'meas', 'what'.
+
+```{r}
+#### Does every Data Item begin with "STRAWBERRIES"
+sum(str_detect(strawberry$`Data Item`, "^STRAWBERRIES")) ==
+  length(strawberry$`Data Item`)
+
+strawberry %<>% 
+  separate(`Data Item`,c("Berry","item"), sep = 14) %<>%
+  select(-Berry)
+#nchar("STRAWBERRIES") = 12  
+
+strawberry %<>% separate(item, c("what","meas","how"), sep = ',')
+```
+We notice that when what == 'PROCESSING', the content in the 'how' column and the 'what' column should be switched.
+
+```{r}
+#strawberry %>%filter(what == "PROCESSING")
+strawberry %<>% mutate(meas = ifelse(what =="PROCESSING",how,meas))
+strawberry %<>% mutate(how = ifelse(what == "PROCESSING","",how))
+```
+
+Repeat the process for 'what' == 'FRESH MARKET'
+```{r}
+strawberry %<>% 
+  mutate(what = ifelse(what == "FRESH MARKET", "FRESH MARKET - UTILIZED - PRODUCTION", what)) %<>% 
+  mutate(meas = ifelse(what == "FRESH MARKET - UTILIZED - PRODUCTION", how, meas)) %<>% 
+  mutate(how = ifelse(what == "FRESH MARKET - UTILIZED - PRODUCTION", "", how))
+```
+
+Now Lets check whether we have finished the cleaing of the "Data Item" Part. 
+```{r}
+strawberry %>% summarize_all(n_distinct)
+#strawberry$how %>% unique()
+#strawberry$what %>% unique()
+#strawberry$meas %>% unique()
+```
+
+#### Cleaning the 'Domain' & 'Domain Category' columns 
+
+```{r}
+#Separate by ","
+strawberry %<>% separate(Domain, c("Category", "chemi_type"), sep = ", ")
+strawberry %<>% separate(`Domain Category`, c("DC_left", "DC_right"), sep = ", ")
+strawberry[is.na(strawberry)] <- ""
+
+## work on DC_left first
+strawberry %<>% separate(DC_left, c("DC_left_l", "ferti_info"), sep = ": ")
+strawberry %<>% separate(DC_right, c("DC_right_l", "chemi_info"), sep = ": ")
+strawberry[is.na(strawberry)] <- ""
+```
+
+OK now we need to eliminate the redundancy and rename a column to make it more clear and comprehensible.
+```{r}
+## remove column strawberry$DC_left_l
+strawberry %<>%  select(-DC_left_l, -DC_right_l) 
+## turn the 'meas' column into the 'unit' column
+strawberry %<>% 
+  separate(meas, c("meas", "unit"), sep = 13) %<>%
+  select(-meas)
+```
+
+Last but not least, we notice that the 'Value' column contains the important information and we need transform it into numeric and replace the NAs.
+```{r}
+# Set Value to be numeric
+strawberry$Value <-as.numeric(gsub(pattern = ",", replacement = "",strawberry$Value))
+strawberry[is.na(strawberry)] <- 0
+```
+
+Finally, let's save the file:
+```{r}
+write.csv(strawberry, "cleaned_strawberry.csv")
+```
+
+## Part 2: Exploratory Data Analysis
+
+Based on the cleaned dataset above, we find that, in the 'what' column, the data we have shows different indexes of the agriculture, including ACRES HARVESTED, ACRES PLANTED, PRODUCTION, YIELD and so on. What is more, some indexes are measured by different units. For example, the 'PRODUCTION' is measured by both $ and CWT. 
+
+Therefore, we decide to divide the cleaned dataset into several parts and perform the exploratory data analysis on them respectively.
+
+### Divide the dataset from different levels
+```{r}
+# Divide by the what column
+AH <- strawberry %>% filter(what == ' ACRES HARVESTED')
+AP <- strawberry %>% filter(what == ' ACRES PLANTED')
+prod <- strawberry %>% filter(what == ' PRODUCTION')
+yield <- strawberry %>% filter(what == ' YIELD')
+
+# Divide by the Category column
+total <- subset(strawberry, Category == "TOTAL")
+chemi <- subset(strawberry, Category == 'CHEMICAL')
+ferti <- subset(strawberry, Category == 'FERTILIZER')
+```
+
+### Production data for each state across the years
+```{r}
+# PRODUCTION divide by different units 
+prod_dollar <- subset(prod, unit == "$")
+prod_cwt <- subset(prod, unit == "CWT")
+```
+
+```{r}
+# Plot production in $ by each state
+ggplot(prod_dollar, aes(prod_dollar$Year,prod_dollar$Value/1000000)) +
+  geom_point() +
+  facet_wrap(~State) +
+  ggtitle("Production in millions dollar of States") +
+  labs(y="Production / million $ ", x = "Year") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+## Plot production in cwt by each state
+ggplot(prod_cwt, aes(prod_cwt$Year,prod_cwt$Value)) +
+  geom_point() +
+  facet_wrap(~State) +
+  ggtitle("Production in cwt of States") +
+  labs(y="Production / cwt ", x = "Year") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+The above graphs show that California has the highest value of strawberry productions over the years 2015 to 2019, Florida has the second highest production value. 
+
+### Acres Harvested data for each state across the years
+```{r}
+ggplot(AH, aes(AH$Year,AH$Value)) +
+  geom_point() +
+  facet_wrap(~State) +
+  ggtitle("Acres Harvested of States") +
+  labs(y="Acres Harvested ", x = "Year") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+### Arces planted data for each state across the years
+```{r}
+ggplot(AP, aes(AP$Year, AP$Value)) +
+  geom_point() +
+  facet_wrap(~State) +
+  ggtitle("Acres Planted of States") +
+  labs(y="Acres Planted ", x = "Year") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+### Yield data for each state across the years
+```{r}
+ggplot(yield, aes(yield$Year, yield$Value)) +
+  geom_point() +
+  facet_wrap(~State) +
+  ggtitle("Yield in cwt/acre of States") +
+  labs(y="Yield / (cwt/acre) ", x = "Year") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+### Measurement Analysis
+
+Firstly, let's count how many different types of unit are used in measurement.
+```{r}
+meas_unit <- strawberry %>%
+  group_by(unit) %>%
+  summarize(count = n(),
+            Mean.Value = round(mean(Value),2))
+length(meas_unit$unit) - 1
+```
+So, there are 9 types of unit used in measurement in the strawberry data set.
+Next, Lets make a bar plot to see the frequency of the units used.
+```{r}
+# frequency of unit used
+ggplot(strawberry,aes(unit))+
+  geom_bar(fill = "sky blue") +
+  ggtitle("Units of measurment of Strawberry") +
+  theme(axis.text.x = element_text(angle = 45,hjust = 1))
+```
+
+Based on the plot above, the 'PCT OF AREA BEARING' is used most frequently and 'TONS' is used for the least times. And we can notice that, there are also many indexes do not have units. 
+
+
+## Part 3:  Reference
+
+This project references to Haviland's codes of data acquiring and reading, and receives help from Zhiwei Liang and Chenxun Li about how to transform characters to numeric forms, and what type of visualizations to implement. 
+
+This berries project uses packages tidyverse(Wickham et al., 2019), ggplot2(H. Wickham, 2016), kableExtra(Hao Zhu, 2020), and magrittr(S. M. Bache and H. Wickham, 2014) for data cleaning. The final report is complied by knitr(Yihui Xie, 2020), app is built using package shiny(Winston Chang, Joe Cheng, JJ Allaire, Yihui Xie and Jonathan McPherson, 2020)
+
+
